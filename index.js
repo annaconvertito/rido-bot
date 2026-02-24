@@ -253,6 +253,16 @@ app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
+    console.log('================ DEBUG WEBHOOK ================');
+  console.log('1️⃣ Tutti i parametri ricevuti:', req.query);
+  console.log('2️⃣ mode:', mode);
+  console.log('3️⃣ token:', token);
+  console.log('4️⃣ challenge:', challenge);
+  console.log('5️⃣ VERIFY_TOKEN nel codice:', VERIFY_TOKEN);
+  console.log('6️⃣ tipo del token ricevuto:', typeof token);
+  console.log('7️⃣ lunghezza token ricevuto:', token ? token.length : 'null');
+  console.log('8️⃣ token === VERIFY_TOKEN?', token === VERIFY_TOKEN);
+  console.log('================================================');
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ Webhook verificato!');
