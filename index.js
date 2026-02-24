@@ -585,7 +585,7 @@ async function sendQuickReplies(recipientId, text, replies) {
 // =====================================================
 // AVVIA SERVER
 // =====================================================
-  app.listen(PORT, () => {
+    app.listen(PORT, '0.0.0.0', () => {
   console.log(`🟢 Ri-Do Bot attivo su porta ${PORT}`);
   console.log(`🌐 URL pubblico: https://rido-bot.onrender.com`);
   console.log(`🔑 Verify Token: rido-verify-2026`);
