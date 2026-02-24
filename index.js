@@ -264,11 +264,13 @@ app.get('/webhook', (req, res) => {
   console.log('8️⃣ token === VERIFY_TOKEN?', token === VERIFY_TOKEN);
   console.log('================================================');
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ Webhook verificato!');
     res.status(200).send(challenge);
   } else {
     console.error('❌ Verifica webhook fallita');
+    console.error('Aspettavo:', VERIFY_TOKEN);
+    console.error('Ricevuto:', token);
     res.sendStatus(403);
   }
 });
