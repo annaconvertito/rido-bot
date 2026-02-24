@@ -12,7 +12,9 @@ const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
-app.use(express.json());
+app.get('/', (req, res) => {
+  res.send('✅ Ri-Do Bot ONLINE - Server funzionante!');
+  });
 
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'rido-verify-2026';
