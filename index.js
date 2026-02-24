@@ -588,4 +588,8 @@ async function sendQuickReplies(recipientId, text, replies) {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🟢 Ri-Do Bot attivo su porta ${PORT}`);
   console.log(`📡 Webhook: http://localhost:${PORT}/webhook`);
+     console.log(`🟢 Ri-Do Bot attivo sulla porta ${PORT}`);
+    console.log(`📡 In ascolto su 0.0.0.0:${PORT}`);
+    console.log(`🌐 URL pubblico: https://rido-bot.onrender.com`);
+    console.log(`🔑 Verify Token: rido-verify-2026`);
 });
