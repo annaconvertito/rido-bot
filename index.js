@@ -247,21 +247,36 @@ function resetSession(senderId) {
 }
 
 // =====================================================
-// WEBHOOK VERIFY (richiesto da Meta)
+// VERIFICA WEBHOOK (Necessaria per la configurazione Meta)
 // =====================================================
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('✅ Webhook verificato!');
-    res.status(200).send(challenge);
-  } else {
-    console.error('❌ Verifica webhook fallita');
-    res.sendStatus(403);
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      console.log('WEBHOOK_VERIFIED');
+      // Risponde con il challenge in formato plain text
+      res.status(200).send(challenge);
+    } else {
+      // Token non corrispondente
+      res.sendStatus(403);
+    }
   }
 });
+
+// Endpoint per ricevere i messaggi (POST)
+app.post('/webhook', (req, res) => {
+  const body = req.body;
+  if (body.object === 'page') {
+    // Qui andrà la tua logica per gestire i messaggi
+    res.status(200).send('EVENT_RECEIVED');
+  } else {
+    res.sendStatus(404);
+  }
+});
+
 
 // =====================================================
 // WEBHOOK RECEIVE — riceve messaggi da Messenger
