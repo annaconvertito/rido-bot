@@ -12,9 +12,7 @@ const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
-app.get('/', (req, res) => {
-  res.send('✅ Ri-Do Bot ONLINE - Server funzionante!');
-  });
+app.use(express.json());
 
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'rido-verify-2026';
@@ -255,24 +253,12 @@ app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-    console.log('================ DEBUG WEBHOOK ================');
-  console.log('1️⃣ Tutti i parametri ricevuti:', req.query);
-  console.log('2️⃣ mode:', mode);
-  console.log('3️⃣ token:', token);
-  console.log('4️⃣ challenge:', challenge);
-  console.log('5️⃣ VERIFY_TOKEN nel codice:', VERIFY_TOKEN);
-  console.log('6️⃣ tipo del token ricevuto:', typeof token);
-  console.log('7️⃣ lunghezza token ricevuto:', token ? token.length : 'null');
-  console.log('8️⃣ token === VERIFY_TOKEN?', token === VERIFY_TOKEN);
-  console.log('================================================');
 
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ Webhook verificato!');
     res.status(200).send(challenge);
   } else {
     console.error('❌ Verifica webhook fallita');
-    console.error('Aspettavo:', VERIFY_TOKEN);
-    console.error('Ricevuto:', token);
     res.sendStatus(403);
   }
 });
@@ -599,9 +585,7 @@ async function sendQuickReplies(recipientId, text, replies) {
 // =====================================================
 // AVVIA SERVER
 // =====================================================
-    app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, () => {
   console.log(`🟢 Ri-Do Bot attivo su porta ${PORT}`);
-  console.log(`🌐 URL pubblico: https://rido-bot.onrender.com`);
-  console.log(`🔑 Verify Token: rido-verify-2026`);
-  console.log(`📡 Endpoint webhook: /webhook`);
+  console.log(`📡 Webhook: http://localhost:${PORT}/webhook`);
 });
