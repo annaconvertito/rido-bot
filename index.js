@@ -263,7 +263,7 @@ app.get('/webhook', (req, res) => {
   console.log('5️⃣ VERIFY_TOKEN nel codice:', VERIFY_TOKEN);
   console.log('6️⃣ tipo del token ricevuto:', typeof token);
   console.log('7️⃣ lunghezza token ricevuto:', token ? token.length : 'null');
-  console.log('8️⃣ token === VERIFY_TOKEN, token === VERIFY_TOKEN);
+  console.log('8️⃣ token === VERIFY_TOKEN?', token === VERIFY_TOKEN);
   console.log('================================================');
 
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
