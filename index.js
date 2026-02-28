@@ -235,24 +235,11 @@ async function sendEmails(orderId, data) {
 // =====================================================
 const sessions = {};
 
-function getSession(senderId) {
-  if (!sessions[senderId]) {
-    sessions[senderId] = { step: 'idle', data: {} };
-  }
-  return sessions[senderId];
-}
 
 function resetSession(senderId) {
   sessions[senderId] = { step: 'idle', data: {} };
 }
 
-// =====================================================
-// VERIFICA WEBHOOK (Necessaria per la configurazione Meta)
-// =====================================================
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
 
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
