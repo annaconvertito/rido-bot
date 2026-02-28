@@ -1,6 +1,6 @@
 /**
- * RIDO BOT — Versione Integrale Corretta 2026
- * Gestisce: Prenotazione, Indirizzi, Veicoli, Email e Conferma
+ * RIDO BOT — VERSIONE DEFINITIVA 2026 🟢
+ * Funzionalità: Prenotazione completa, Veicoli, Note, Email Grafiche, Stato Ordine
  */
 
 const express = require('express');
@@ -22,7 +22,7 @@ const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS,
+    pass: process.env.GMAIL_PASS, // App Password di Gmail
   },
 });
 
@@ -30,7 +30,7 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL || process.env.GMAIL_USER;
 const FROM_EMAIL = `Ri-Do 🟢 <${process.env.GMAIL_USER}>`;
 
 // =====================================================
-// GESTIONE SESSIONI
+// GESTIONE SESSIONI UTENTI
 // =====================================================
 const sessions = {};
 
@@ -46,14 +46,14 @@ function resetSession(senderId) {
 }
 
 // =====================================================
-// WEBHOOK (GET & POST)
+// WEBHOOK (VERIFICA E RICEZIONE)
 // =====================================================
-
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✅ WEBHOOK_VERIFIED');
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
@@ -81,53 +81,44 @@ app.post('/webhook', (req, res) => {
 });
 
 // =====================================================
-// LOGICA DEI MESSAGGI (IL CUORE DEL BOT)
+// LOGICA DI CONVERSAZIONE
 // =====================================================
-
 async function handleMessage(senderId, message) {
   const session = getSession(senderId);
   const text = message.text ? message.text.trim().toLowerCase() : '';
 
-  // Comandi di emergenza
-  if (text === 'annulla' || text === 'menu' || text === 'stop' || text === 'reset') {
+  // Comandi Reset
+  if (['annulla', 'menu', 'stop', 'reset', 'ciao', 'start'].includes(text)) {
     resetSession(senderId);
+    if (text === 'ciao' || text === 'start') return sendWelcome(senderId);
     return sendMenu(senderId);
   }
 
   switch (session.step) {
-    case 'idle':
-      if (text.includes('prenot') || text.includes('ritiro') || text === '1') {
-        return startBooking(senderId);
-      } else if (text.includes('stato') || text === '2') {
-        return askOrderStatus(senderId);
-      } else {
-        return sendWelcome(senderId);
-      }
-
     case 'await_item_type':
       session.data.item = message.text;
       session.step = 'await_pickup_address';
-      return send(senderId, `✅ Oggetto: *${message.text}*\n\n📍 Qual è l'indirizzo di *ritiro*?\n(Scrivilo qui sotto)`);
+      return send(senderId, `✅ Hai inserito: *${message.text}*\n\n📍 Adesso dimmi l'indirizzo di *ritiro* (Via e città):`);
 
     case 'await_pickup_address':
       session.data.pickup = message.text;
       session.step = 'await_drop_address';
-      return send(senderId, '🏠 Ottimo. Ora dimmi l\'indirizzo di *consegna*:');
+      return send(senderId, '🏠 Ricevuto. Qual è l\'indirizzo di *consegna*?');
 
     case 'await_drop_address':
       session.data.drop = message.text;
-      session.step = 'await_vehicle'; // Fondamentale per non bloccarsi!
+      session.step = 'await_vehicle'; 
       return sendVehicleChoice(senderId);
 
     case 'await_notes':
-      session.data.notes = (text === 'nessuna' || text === 'no') ? 'Nessuna' : message.text;
+      session.data.notes = (text === 'nessuna' || text === 'no') ? 'Nessuna nota' : message.text;
       session.step = 'await_email';
-      return send(senderId, '📧 Ultimo passo! Scrivi la tua *email* per ricevere la ricevuta (o scrivi "salta"):');
+      return send(senderId, '📧 Per concludere, scrivi la tua *email* per la conferma (o scrivi "salta"):');
 
     case 'await_email':
       if (text !== 'salta' && text.includes('@')) {
         session.data.email = text;
-        await send(senderId, `✅ Email registrata: ${text}`);
+        await send(senderId, `✅ Email salvata: ${text}`);
       }
       return confirmBooking(senderId);
 
@@ -135,7 +126,6 @@ async function handleMessage(senderId, message) {
       return checkOrderStatus(senderId, text.toUpperCase());
 
     default:
-      resetSession(senderId);
       return sendMenu(senderId);
   }
 }
@@ -149,37 +139,36 @@ async function handlePostback(senderId, payload) {
   if (payload.startsWith('ITEM_')) {
     session.data.item = payload.replace('ITEM_', '');
     session.step = 'await_pickup_address';
-    return send(senderId, `✅ Hai scelto: *${session.data.item}*\n\n📍 Qual è l'indirizzo di *ritiro*?`);
+    return send(senderId, `📦 Hai scelto: *${session.data.item}*\n\n📍 Qual è l'indirizzo di *ritiro*?`);
   }
 
   if (payload.startsWith('VEH_')) {
-    const parts = payload.split('_'); // VEH_Furgone_18_1.8
+    const parts = payload.split('_'); 
     session.data.vehicle = parts[1];
     session.data.priceBase = parseFloat(parts[2]);
     session.data.priceKm = parseFloat(parts[3]);
     session.step = 'await_notes';
     const est = (session.data.priceBase + (5 * session.data.priceKm)).toFixed(2);
-    return send(senderId, `🚐 Veicolo: *${parts[1]}*\n💰 Stima: ~€${est} (per 5km)\n\n📝 Hai note per il driver? (es: citofono, piano) o scrivi *"nessuna"*:`);
+    return send(senderId, `🚐 Veicolo scelto: *${parts[1]}*\n💰 Stima: €${est} (5km incl.)\n\n📝 Hai delle note per il driver? (es. piano, orario) o scrivi *"nessuna"*:`);
   }
 
   if (payload === 'CONFIRM_YES') return finalizeBooking(senderId);
   if (payload === 'CONFIRM_NO') {
     resetSession(senderId);
-    return send(senderId, 'Operazione annullata. Scrivi "prenota" per ricominciare.');
+    return send(senderId, 'Prenotazione annullata. Scrivi "prenota" quando vuoi.');
   }
 }
 
 // =====================================================
-// FUNZIONI DI SUPPORTO (MENU E BOTTONI)
+// FUNZIONI DI INTERFACCIA (MENU E BOTTONI)
 // =====================================================
-
 async function sendWelcome(senderId) {
-  await send(senderId, '👋 Ciao! Benvenuto su *Ri-Do* 🟢\nIl servizio di trasporti intelligente a Caserta e provincia.');
+  await send(senderId, '👋 Ciao! Benvenuto su *Ri-Do* 🟢\nIl tuo assistente per trasporti e traslochi a Caserta.');
   return sendMenu(senderId);
 }
 
 async function sendMenu(senderId) {
-  return sendQuickReplies(senderId, 'Cosa desideri fare?', [
+  return sendQuickReplies(senderId, 'Scegli un\'opzione:', [
     { title: '📦 Prenota ritiro', payload: 'PRENOTA' },
     { title: '📋 Stato ordine', payload: 'STATO_ORDINE' },
   ]);
@@ -207,62 +196,89 @@ async function sendVehicleChoice(senderId) {
 async function confirmBooking(senderId) {
   const d = getSession(senderId).data;
   const est = ((d.priceBase || 18) + 5 * (d.priceKm || 1.8)).toFixed(2);
-  const summary = `📋 *RIEPILOGO PRENOTAZIONE*\n\n📦 Oggetto: ${d.item}\n📍 Ritiro: ${d.pickup}\n🏠 Consegna: ${d.drop}\n🚐 Veicolo: ${d.vehicle}\n💰 Stima: €${est}\n📧 Email: ${d.email || 'Non fornita'}\n\nConfermi i dati?`;
+  const summary = `📋 *RIEPILOGO PRENOTAZIONE*\n\n📦 Oggetto: ${d.item}\n📍 Ritiro: ${d.pickup}\n🏠 Consegna: ${d.drop}\n🚐 Veicolo: ${d.vehicle}\n💰 Prezzo stimato: €${est}\n📧 Email: ${d.email || '—'}\n\nConfermi i dati?`;
   
   return sendQuickReplies(senderId, summary, [
     { title: '✅ Conferma', payload: 'CONFIRM_YES' },
-    { title: '❌ Annulla', payload: 'CONFIRM_NO' },
+    { title: '❌ Modifica/Annulla', payload: 'CONFIRM_NO' },
   ]);
 }
 
 async function finalizeBooking(senderId) {
-  const orderId = 'ORD-' + Math.floor(100000 + Math.random() * 900000);
+  const orderId = 'RD-' + Math.floor(100000 + Math.random() * 900000);
   const data = getSession(senderId).data;
-
-  // Invia Email all'Admin e al Cliente
   await sendEmails(orderId, data);
-
-  await send(senderId, `🎉 *OTTIMO! PRENOTAZIONE INVIATA.*\n\nIl tuo numero ordine è: *#${orderId}*\n\nUn nostro driver ti contatterà a breve su Messenger per confermare l'orario esatto. Grazie per aver scelto Ri-Do! 🟢`);
+  await send(senderId, `🎉 *RICHIESTA INVIATA!*\n\nOrdine: *#${orderId}*\n\nUn driver si metterà in contatto con te qui su Messenger a breve. Grazie! 🟢`);
   resetSession(senderId);
 }
 
 async function askOrderStatus(senderId) {
   getSession(senderId).step = 'await_order_id';
-  return send(senderId, '📋 Inserisci il tuo numero ordine (es: ORD-123456):');
+  return send(senderId, '📋 Inserisci il codice ordine (es: RD-123456):');
 }
 
 async function checkOrderStatus(senderId, orderId) {
-  await send(senderId, `🔎 Stiamo verificando l'ordine *${orderId}*... Risulta in fase di assegnazione driver.`);
+  await send(senderId, `🔎 Ordine *${orderId}*: in fase di ricerca driver nelle vicinanze.`);
   resetSession(senderId);
   return sendMenu(senderId);
 }
 
 // =====================================================
-// INVIO EMAIL & MESSAGGI (API FACEBOOK)
+// INVIO EMAIL GRAFICHE (ADMIN E CLIENTE)
 // =====================================================
-
 async function sendEmails(orderId, data) {
   try {
     const est = ((data.priceBase || 18) + 5 * (data.priceKm || 1.8)).toFixed(2);
-    const mailOptions = {
+    
+    // Template Admin (Grafica originale Ri-Do)
+    const htmlAdmin = `
+      <div style="font-family: sans-serif; padding: 20px; background-color: #f4f4f4;">
+        <div style="max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 15px; border: 1px solid #1b4332;">
+          <h2 style="color: #1b4332; text-align: center;">📋 Nuovo Ordine #${orderId}</h2>
+          <hr>
+          <p><b>📦 Oggetto:</b> ${data.item}</p>
+          <p><b>📍 Ritiro:</b> ${data.pickup}</p>
+          <p><b>🏠 Consegna:</b> ${data.drop}</p>
+          <p><b>🚐 Veicolo:</b> ${data.vehicle}</p>
+          <p><b>📝 Note:</b> ${data.notes}</p>
+          <div style="background: #1b4332; color: white; padding: 15px; text-align: center; border-radius: 10px; margin-top: 20px;">
+            <span style="font-size: 20px;">Stima Guadagno: <b>€${est}</b></span>
+          </div>
+          <p style="margin-top: 20px; font-size: 12px; color: #666;">Cliente: ${data.email || 'Messenger User'}</p>
+        </div>
+      </div>
+    `;
+
+    // Email all'Amministratore
+    await transporter.sendMail({
       from: FROM_EMAIL,
       to: ADMIN_EMAIL,
-      subject: `📋 NUOVO ORDINE RI-DO #${orderId}`,
-      text: `Nuovo ordine ricevuto!\n\nID: ${orderId}\nOggetto: ${data.item}\nRitiro: ${data.pickup}\nConsegna: ${data.drop}\nVeicolo: ${data.vehicle}\nEmail Cliente: ${data.email || 'Nessuna'}\nPrezzo Stimato: €${est}`
-    };
-    await transporter.sendMail(mailOptions);
-  } catch (err) {
-    console.error("❌ Errore invio email:", err.message);
-  }
+      subject: `🚚 NUOVA CORSA RI-DO #${orderId}`,
+      html: htmlAdmin
+    });
+
+    // Email al Cliente (se disponibile)
+    if (data.email) {
+      await transporter.sendMail({
+        from: FROM_EMAIL,
+        to: data.email,
+        subject: `✅ Conferma Prenotazione #${orderId} - Ri-Do`,
+        html: `<h3>Il tuo ritiro è stato prenotato!</h3><p>Ciao, abbiamo ricevuto la tua richiesta per il trasporto di <b>${data.item}</b>. Un driver ti contatterà presto.</p>`
+      });
+    }
+  } catch (err) { console.error("❌ Errore Email:", err.message); }
 }
 
+// =====================================================
+// API FACEBOOK (AXIOS)
+// =====================================================
 async function send(recipientId, text) {
   try {
     await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
       recipient: { id: recipientId },
       message: { text },
     });
-  } catch (err) { console.error('Errore invio messaggio:', err.response?.data || err.message); }
+  } catch (err) { console.error('Invio err:', err.response?.data || err.message); }
 }
 
 async function sendQuickReplies(recipientId, text, replies) {
@@ -274,7 +290,7 @@ async function sendQuickReplies(recipientId, text, replies) {
         quick_replies: replies.map(r => ({ content_type: 'text', title: r.title, payload: r.payload }))
       },
     });
-  } catch (err) { console.error('Errore QuickReplies:', err.response?.data || err.message); }
+  } catch (err) { console.error('QR err:', err.response?.data || err.message); }
 }
 
 app.listen(PORT, () => console.log(`🟢 Ri-Do Bot attivo su porta ${PORT}`));
