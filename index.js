@@ -182,7 +182,62 @@ function emailAdmin(orderId, data) {
 </div>`,
   };
 }
+// =====================================================
+// STATO SESSIONI UTENTI (Gestione memoria)
+// =====================================================
+const sessions = {};
 
+function getSession(senderId) {
+  if (!sessions[senderId]) {
+    sessions[senderId] = { step: 'idle', data: {} };
+  }
+  return sessions[senderId];
+}
+
+function resetSession(senderId) {
+  sessions[senderId] = { step: 'idle', data: {} };
+}
+
+// =====================================================
+// WEBHOOK VERIFICATION (GET)
+// =====================================================
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      console.log('✅ WEBHOOK_VERIFIED');
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
+    }
+  }
+});
+
+// =====================================================
+// WEBHOOK RECEIVE (POST)
+// =====================================================
+app.post('/webhook', (req, res) => {
+  const body = req.body;
+  if (body.object === 'page') {
+    body.entry.forEach(entry => {
+      if (entry.messaging && entry.messaging[0]) {
+        const event = entry.messaging[0];
+        const senderId = event.sender.id;
+        if (event.message) {
+          handleMessage(senderId, event.message);
+        } else if (event.postback) {
+          handlePostback(senderId, event.postback.payload);
+        }
+      }
+    });
+    res.status(200).send('EVENT_RECEIVED');
+  } else {
+    res.sendStatus(404);
+  }
+});
 // =====================================================
 // FUNZIONE INVIO EMAIL
 // =====================================================
