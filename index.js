@@ -1,25 +1,23 @@
 /**
- * 🟢 RIDO BOT — VERSIONE FINALE PROFESSIONALE
- * Funzionalità: Loop Fix, Email Admin, Tasto Chiama Driver Dinamico
+ * 🟢 RIDO LOGISTICS ULTIMATE 2026
+ * Funzioni: Foto Obbligatoria, GPS, Calcolo Prezzo, Stripe/PayPal, Email Admin
  */
 
 const express = require('express');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 
-// --- CONFIGURAZIONE VARIABILI ---
+// --- CONFIGURAZIONE ---
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'rido-verify-2026';
 const PORT = process.env.PORT || 3000;
-
-// Legge il numero da Render (Key: TELEFONO_DRIVER). Se non c'è, usa un fallback.
 const TELEFONO_ASSISTENZA = process.env.TELEFONO_DRIVER || "+390000000000";
 
-// --- CONFIGURAZIONE EMAIL ---
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -28,230 +26,224 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || process.env.GMAIL_USER;
-const FROM_EMAIL = `Ri-Do 🟢 <${process.env.GMAIL_USER}>`;
-
-// --- GESTIONE SESSIONI ---
 const sessions = {};
-function getSession(senderId) {
-  if (!sessions[senderId]) sessions[senderId] = { step: 'idle', data: {} };
-  return sessions[senderId];
+function getSession(id) {
+  if (!sessions[id]) sessions[id] = { step: 'idle', data: {} };
+  return sessions[id];
 }
-function resetSession(senderId) {
-  sessions[senderId] = { step: 'idle', data: {} };
-}
+function resetSession(id) { sessions[id] = { step: 'idle', data: {} }; }
 
-// --- WEBHOOK ---
+// --- WEBHOOK VERIFICA ---
 app.get('/webhook', (req, res) => {
   if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
     res.status(200).send(req.query['hub.challenge']);
-  } else {
-    res.sendStatus(403);
-  }
+  } else { res.sendStatus(403); }
 });
 
+// --- WEBHOOK RICEZIONE ---
 app.post('/webhook', (req, res) => {
   const body = req.body;
   if (body.object === 'page') {
     body.entry.forEach(entry => {
-      if (entry.messaging && entry.messaging[0]) {
-        const event = entry.messaging[0];
-        const senderId = event.sender.id;
+      if (!entry.messaging) return;
+      const event = entry.messaging[0];
+      const senderId = event.sender.id;
 
-        // Gestione Clic (Pulsanti/Quick Replies)
-        if (event.postback || (event.message && event.message.quick_reply)) {
-          const payload = event.postback ? event.postback.payload : event.message.quick_reply.payload;
-          handlePayload(senderId, payload);
-        } 
-        // Gestione Testo
-        else if (event.message && event.message.text) {
-          handleText(senderId, event.message.text);
-        }
+      if (event.message && event.message.attachments) {
+        handleAttachments(senderId, event.message.attachments);
+      } else if (event.postback || (event.message && event.message.quick_reply)) {
+        const payload = event.postback ? event.postback.payload : event.message.quick_reply.payload;
+        handlePayload(senderId, payload);
+      } else if (event.message && event.message.text) {
+        handleText(senderId, event.message.text);
       }
     });
     res.status(200).send('EVENT_RECEIVED');
   }
 });
 
-// --- LOGICA PULSANTI ---
+// --- LOGICA ALLEGATI (FOTO E GPS) ---
+async function handleAttachments(senderId, attachments) {
+  const session = getSession(senderId);
+  const att = attachments[0];
+
+  if (att.type === 'image' && session.step === 'await_photo') {
+    session.data.photoUrl = att.payload.url;
+    session.step = 'await_pickup';
+    await send(senderId, "📸 Foto ricevuta! Ora sappiamo cosa trasportare.");
+    return send(senderId, "📍 Inviaci l'indirizzo di RITIRO (o usa la posizione GPS 📎):");
+  }
+
+  if (att.type === 'location' && session.step === 'await_pickup') {
+    const { lat, long } = att.payload.coordinates;
+    session.data.pickup = `https://www.google.com/maps?q=${lat},${long}`;
+    session.step = 'await_drop';
+    return send(senderId, "📍 Posizione GPS salvata. Ora scrivi l'indirizzo di CONSEGNA:");
+  }
+}
+
+// --- LOGICA PULSANTI (PAYLOAD) ---
 async function handlePayload(senderId, payload) {
   const session = getSession(senderId);
 
-  if (payload === 'PRENOTA') return startBooking(senderId);
-  if (payload === 'STATO_ORDINE') return askOrderStatus(senderId);
-  
+  if (payload === 'PRENOTA') {
+    session.step = 'await_item';
+    return sendQuickReplies(senderId, "📦 Cosa dobbiamo trasportare?", [
+      { title: '🛋️ Mobili', payload: 'ITEM_Mobili' },
+      { title: '📺 Elettrodomestici', payload: 'ITEM_Elettrodomestici' },
+      { title: '📦 Altro', payload: 'ITEM_Altro' }
+    ]);
+  }
+
   if (payload.startsWith('ITEM_')) {
-    session.data.item = payload.replace('ITEM_', '');
-    session.step = 'await_pickup_address';
-    return send(senderId, `✅ Oggetto: *${session.data.item}*\n\n📍 Qual è l'indirizzo di *ritiro*?`);
+    session.data.item = payload.split('_')[1];
+    session.step = 'await_photo';
+    return send(senderId, `Hai scelto: ${session.data.item}.\n\n📸 Per favore, scatta o invia una FOTO dell'oggetto.`);
   }
 
   if (payload.startsWith('VEH_')) {
-    const parts = payload.split('_'); 
-    session.data.vehicle = parts[1];
-    session.data.priceBase = parseFloat(parts[2]);
-    session.data.priceKm = parseFloat(parts[3]);
-    session.step = 'await_notes';
-    const est = (session.data.priceBase + (5 * session.data.priceKm)).toFixed(2);
-    return send(senderId, `🚐 Veicolo: *${parts[1]}* (~€${est})\n\n📝 Note per il driver? (es: piano, citofono) o scrivi *"nessuna"*:`);
+    const p = payload.split('_');
+    session.data.vehicle = p[1];
+    session.data.priceBase = parseFloat(p[2]);
+    session.data.priceKm = parseFloat(p[3]);
+    session.step = 'await_email';
+    return send(senderId, "📧 Inserisci la tua EMAIL per la conferma:");
   }
 
-  if (payload === 'CONFIRM_YES') return finalizeBooking(senderId);
-  if (payload === 'CONFIRM_NO') { resetSession(senderId); return sendMenu(senderId); }
+  if (payload === 'CONFIRM_PAY') return createPaymentLink(senderId);
+  if (payload === 'RESET') { resetSession(senderId); return sendMenu(senderId); }
 }
 
 // --- LOGICA TESTO ---
 async function handleText(senderId, text) {
   const session = getSession(senderId);
-  const cleanText = text.trim().toLowerCase();
+  const msg = text.toLowerCase().trim();
 
-  if (['annulla', 'menu', 'reset', 'ciao'].includes(cleanText)) {
-    resetSession(senderId);
-    return sendMenu(senderId);
-  }
+  if (['menu', 'reset', 'ciao'].includes(msg)) { resetSession(senderId); return sendMenu(senderId); }
 
   switch (session.step) {
-    case 'await_pickup_address':
+    case 'await_pickup':
       session.data.pickup = text;
-      session.step = 'await_drop_address';
-      return send(senderId, '🏠 Ricevuto. Ora l\'indirizzo di *consegna*:');
+      session.step = 'await_drop';
+      return send(senderId, "🏠 Ricevuto. Indirizzo di CONSEGNA?");
 
-    case 'await_drop_address':
+    case 'await_drop':
       session.data.drop = text;
       session.step = 'await_vehicle';
       return sendVehicleChoice(senderId);
 
-    case 'await_notes':
-      session.data.notes = (cleanText === 'nessuna' || cleanText === 'no') ? 'Nessuna' : text;
-      session.step = 'await_email';
-      return send(senderId, '📧 Scrivi la tua email (o scrivi *"salta"*):');
-
     case 'await_email':
-      if (cleanText !== 'salta' && cleanText.includes('@')) session.data.email = text;
+      if (!text.includes('@')) return send(senderId, "⚠️ Email non valida. Riprova:");
+      session.data.email = text;
       return confirmBooking(senderId);
 
-    case 'await_order_id':
-      return checkOrderStatus(senderId, text.toUpperCase());
-
-    default:
-      return sendMenu(senderId);
+    default: return sendMenu(senderId);
   }
 }
 
-// --- INTERFACCIA ---
+// --- INTERFACCIA E PAGAMENTI ---
 async function sendMenu(senderId) {
-  return sendQuickReplies(senderId, '👋 Benvenuto su Ri-Do 🟢\nCosa desideri fare?', [
-    { title: '📦 Prenota ritiro', payload: 'PRENOTA' },
-    { title: '📋 Stato ordine', payload: 'STATO_ORDINE' },
-  ]);
-}
-
-async function startBooking(senderId) {
-  getSession(senderId).step = 'await_item_type';
-  return sendQuickReplies(senderId, '📦 Cosa dobbiamo trasportare?', [
-    { title: '🛋️ Mobili', payload: 'ITEM_Mobili' },
-    { title: '📺 Elettrodomestici', payload: 'ITEM_Elettrodomestici' },
-    { title: '📦 Scatoloni', payload: 'ITEM_Scatoloni' },
+  return sendQuickReplies(senderId, "🚚 Benvenuto su Ri-Do 🟢\nCosa desideri fare?", [
+    { title: '📦 Prenota ritiro', payload: 'PRENOTA' }
   ]);
 }
 
 async function sendVehicleChoice(senderId) {
-  return sendQuickReplies(senderId, '🚐 Quale veicolo ti serve?', [
+  return sendQuickReplies(senderId, "🚐 Scegli il veicolo:", [
     { title: '🛵 Scooter (€6)', payload: 'VEH_Scooter_6_0.9' },
-    { title: '🚐 Furgone P (€18)', payload: 'VEH_FurgonePiccolo_18_1.8' },
-    { title: '🚐 Furgone M (€24)', payload: 'VEH_FurgoneMedio_24_2.0' },
-    { title: '🚛 Camion (€42)', payload: 'VEH_Camion_42_2.8' },
+    { title: '🚐 Furgone (€18)', payload: 'VEH_Furgone_18_1.8' },
+    { title: '🚛 Camion (€42)', payload: 'VEH_Camion_42_2.8' }
   ]);
 }
 
 async function confirmBooking(senderId) {
   const d = getSession(senderId).data;
-  const est = ((d.priceBase || 18) + 5 * (d.priceKm || 1.8)).toFixed(2);
-  const summary = `📋 *RIEPILOGO*\n📦 ${d.item}\n📍 Da: ${d.pickup}\n🏠 A: ${d.drop}\n🚐 ${d.vehicle}\n💰 Stima: €${est}\n\nConfermi i dati?`;
+  const totale = (d.priceBase + (10 * d.priceKm)).toFixed(2);
+  const summary = `📋 RIEPILOGO:\n📦 ${d.item}\n📍 Ritiro: ${d.pickup.includes('http') ? 'Posizione GPS' : d.pickup}\n🏠 Consegna: ${d.drop}\n🚐 ${d.vehicle}\n💰 Totale stimato: €${totale}\n\nConfermi e procedi al pagamento?`;
   return sendQuickReplies(senderId, summary, [
-    { title: '✅ Conferma', payload: 'CONFIRM_YES' },
-    { title: '❌ Annulla', payload: 'CONFIRM_NO' },
+    { title: '💳 Paga ora', payload: 'CONFIRM_PAY' },
+    { title: '❌ Annulla', payload: 'RESET' }
   ]);
 }
 
-async function finalizeBooking(senderId) {
-  const orderId = 'RD-' + Math.floor(100000 + Math.random() * 900000);
-  const data = getSession(senderId).data;
-  await sendEmails(orderId, data);
-  
-  // Tasto CHIAMA finale
-  await sendCallButton(senderId, `🎉 *ORDINE INVIATO!*\nCodice: #${orderId}\n\nIl driver è stato avvisato. Per urgenze clicca qui sotto:`);
-  
-  resetSession(senderId);
-}
+async function createPaymentLink(senderId) {
+  const d = getSession(senderId).data;
+  const totaleCent = Math.round((d.priceBase + (10 * d.priceKm)) * 100);
 
-async function askOrderStatus(senderId) {
-  getSession(senderId).step = 'await_order_id';
-  return send(senderId, '📋 Inserisci il numero ordine:');
-}
-
-async function checkOrderStatus(senderId, orderId) {
-  await send(senderId, `🔎 Ordine ${orderId}: ricerca driver in corso.`);
-  resetSession(senderId);
-  return sendMenu(senderId);
-}
-
-// --- API FACEBOOK & EMAIL ---
-async function sendCallButton(recipientId, text) {
   try {
-    await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      recipient: { id: recipientId },
-      message: {
-        attachment: {
-          type: "template",
-          payload: {
-            template_type: "button",
-            text: text,
-            buttons: [{ type: "phone_number", title: "📞 Chiama Driver", payload: TELEFONO_ASSISTENZA }]
-          }
+    const sessionStripe = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'paypal'],
+      line_items: [{
+        price_data: {
+          currency: 'eur',
+          product_data: { name: `Trasporto Ri-Do: ${d.item}` },
+          unit_amount: totaleCent,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      success_url: 'https://www.facebook.com/messages/t/IL_TUO_PAGE_ID', 
+      cancel_url: 'https://www.facebook.com/messages/t/IL_TUO_PAGE_ID',
+    });
+
+    await sendGenericTemplate(senderId, "Completa il Pagamento", "Paga in sicurezza con Carta o PayPal", sessionStripe.url);
+    await finalizeOrderAdmin(senderId); // Invia l'email all'admin subito dopo il link
+  } catch (e) {
+    console.error(e);
+    await send(senderId, "⚠️ Errore pagamento. Riprova più tardi.");
+  }
+}
+
+async function finalizeOrderAdmin(senderId) {
+  const d = getSession(senderId).data;
+  const orderId = 'RD-' + Math.floor(100000 + Math.random() * 900000);
+  
+  const mailOptions = {
+    from: `Ri-Do Bot 🟢 <${process.env.GMAIL_USER}>`,
+    to: process.env.ADMIN_EMAIL || process.env.GMAIL_USER,
+    subject: `🚚 NUOVO ORDINE #${orderId}`,
+    html: `<h2>Nuovo Ordine #${orderId}</h2>
+           <p>📦 Oggetto: ${d.item}</p>
+           <p>🖼️ Foto: <a href="${d.photoUrl}">Vedi Foto</a></p>
+           <p>📍 Ritiro: ${d.pickup}</p>
+           <p>🏠 Consegna: ${d.drop}</p>
+           <p>📧 Email Cliente: ${d.email}</p>`
+  };
+
+  try { await transporter.sendMail(mailOptions); } catch (e) { console.log("Mail Error"); }
+  resetSession(senderId);
+}
+
+// --- HELPER API FACEBOOK ---
+async function send(id, text) {
+  await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    recipient: { id }, message: { text }
+  });
+}
+
+async function sendQuickReplies(id, text, replies) {
+  await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    recipient: { id },
+    message: { text, quick_replies: replies.map(r => ({ content_type: 'text', title: r.title, payload: r.payload })) }
+  });
+}
+
+async function sendGenericTemplate(id, title, subtitle, url) {
+  await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    recipient: { id },
+    message: {
+      attachment: {
+        type: "template",
+        payload: {
+          template_type: "generic",
+          elements: [{
+            title, subtitle,
+            buttons: [{ type: "web_url", url, title: "PAGA ORA" }, { type: "phone_number", title: "CHIAMA", payload: TELEFONO_ASSISTENZA }]
+          }]
         }
       }
-    });
-  } catch (err) { console.error('Call Button err:', err.response?.data || err.message); }
+    }
+  });
 }
 
-async function sendEmails(orderId, data) {
-  try {
-    const est = ((data.priceBase || 18) + 5 * (data.priceKm || 1.8)).toFixed(2);
-    await transporter.sendMail({
-      from: FROM_EMAIL,
-      to: ADMIN_EMAIL,
-      subject: `🚚 ORDINE #${orderId} - ${data.item}`,
-      html: `<div style="font-family:sans-serif; border:2px solid #1b4332; padding:20px; border-radius:10px;">
-              <h2 style="color:#1b4332;">Nuova richiesta da Messenger</h2>
-              <p><b>📦 Cosa:</b> ${data.item}</p>
-              <p><b>📍 Ritiro:</b> ${data.pickup}</p>
-              <p><b>🏠 Consegna:</b> ${data.drop}</p>
-              <p><b>🚐 Veicolo:</b> ${data.vehicle}</p>
-              <p><b>📝 Note:</b> ${data.notes || 'Nessuna'}</p>
-              <p><b>📧 Email:</b> ${data.email || 'Non fornita'}</p>
-              <hr>
-              <p>💰 <b>Stima Prezzo: €${est}</b></p>
-             </div>`
-    });
-  } catch (err) { console.error("Email err:", err.message); }
-}
-
-async function send(recipientId, text) {
-  try {
-    await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      recipient: { id: recipientId }, message: { text },
-    });
-  } catch (err) { console.error('Send err:', err.response?.data || err.message); }
-}
-
-async function sendQuickReplies(recipientId, text, replies) {
-  try {
-    await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      recipient: { id: recipientId },
-      message: { text, quick_replies: replies.map(r => ({ content_type: 'text', title: r.title, payload: r.payload })) },
-    });
-  } catch (err) { console.error('QR err:', err.response?.data || err.message); }
-}
-
-app.listen(PORT, () => console.log(`🟢 Ri-Do Bot pronto su porta ${PORT}`));
+app.listen(PORT, () => console.log(`🟢 Servizio Ri-Do Attivo sulla porta ${PORT}`));
