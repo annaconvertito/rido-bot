@@ -1,6 +1,6 @@
 /**
- * 🟢 RIDO LOGISTICS ULTIMATE 2026 - FIX GPS
- * ID PAGINA: 61588660651078
+ * 🟢 RIDO LOGISTICS - VERSIONE DEFINITIVA 2026
+ * Funzioni: Foto -> GPS Ritiro -> GPS Consegna -> Calcolo KM -> Email con split 5€
  */
 
 const express = require('express');
@@ -12,6 +12,7 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
+// --- TRASPORTATORE EMAIL ---
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
   port: 465,
@@ -27,8 +28,8 @@ function getSession(id) {
   if (!sessions[id]) sessions[id] = { step: 'idle', data: {} };
   return sessions[id];
 }
-function resetSession(id) { sessions[id] = { step: 'idle', data: {} }; }
 
+// --- FUNZIONE CALCOLO KM (HARVERSINE) ---
 function calculateDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -40,12 +41,14 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     return R * c; 
 }
 
+// --- WEBHOOK VERIFICA ---
 app.get('/webhook', (req, res) => {
   if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) {
     res.status(200).send(req.query['hub.challenge']);
   } else { res.sendStatus(403); }
 });
 
+// --- WEBHOOK RICEZIONE MESSAGGI ---
 app.post('/webhook', async (req, res) => {
   const body = req.body;
   if (body.object === 'page') {
@@ -53,166 +56,138 @@ app.post('/webhook', async (req, res) => {
       if (!entry.messaging) continue;
       const event = entry.messaging[0];
       const senderId = event.sender.id;
+      const session = getSession(senderId);
 
+      // 1. GESTIONE ALLEGATI (FOTO E GPS)
       if (event.message && event.message.attachments) {
-        await handleAttachments(senderId, event.message.attachments);
-      } else if (event.postback || (event.message && event.message.quick_reply)) {
-        const payload = event.postback ? event.postback.payload : event.message.quick_reply.payload;
-        await handlePayload(senderId, payload);
-      } else if (event.message && event.message.text) {
-        await handleText(senderId, event.message.text);
+        const att = event.message.attachments[0];
+        console.log(`Allegato ricevuto tipo: ${att.type} dallo step: ${session.step}`);
+
+        // Ricezione Foto
+        if (att.type === 'image' && session.step === 'await_photo') {
+          session.data.photoUrl = att.payload.url;
+          session.step = 'await_pickup';
+          await sendText(senderId, "📸 Foto salvata! Ora clicca sulla graffetta 📎 (o +) e invia la POSIZIONE GPS di RITIRO.");
+        } 
+        
+        // Ricezione GPS
+        else if (att.type === 'location') {
+          const lat = att.payload.coordinates.lat;
+          const lon = att.payload.coordinates.long;
+
+          if (session.step === 'await_pickup') {
+            session.data.lat1 = lat; session.data.lon1 = lon;
+            session.data.pickup = `https://www.google.com/maps?q=${lat},${lon}`;
+            session.step = 'await_drop';
+            await sendText(senderId, "✅ Ritiro impostato! Ora invia la posizione GPS di CONSEGNA.");
+          } 
+          else if (session.step === 'await_drop') {
+            session.data.lat2 = lat; session.data.lon2 = lon;
+            session.data.drop = `https://www.google.com/maps?q=${lat},${lon}`;
+            
+            const km = calculateDistance(session.data.lat1, session.data.lon1, lat, lon);
+            session.data.km = km.toFixed(2);
+            
+            // Tariffa: 10€ + 1€/km (Minimo 15€)
+            let calcolo = 10 + (km * 1.0);
+            session.data.total = (calcolo < 15 ? 15 : calcolo).toFixed(2);
+            
+            session.step = 'await_email';
+            await sendText(senderId, `📏 Distanza: ${session.data.km} km.\n💰 Prezzo Ri-Do: €${session.data.total}.\n\nScrivi la tua EMAIL per confermare:`);
+          }
+        }
+      } 
+
+      // 2. GESTIONE TESTO (CIAO / EMAIL)
+      else if (event.message && event.message.text) {
+        const text = event.message.text.toLowerCase().trim();
+        console.log(`Testo ricevuto: ${text} dallo step: ${session.step}`);
+
+        if (['ciao', 'menu', 'reset', 'inizia'].includes(text)) {
+          sessions[senderId] = { step: 'start', data: {} };
+          await sendStartButton(senderId);
+        } 
+        else if (session.step === 'await_email' && text.includes('@')) {
+          session.data.email = text;
+          await sendSummary(senderId, session.data);
+        }
+      }
+
+      // 3. GESTIONE PULSANTI (POSTBACK)
+      else if (event.postback) {
+        const payload = event.postback.payload;
+        console.log(`Postback ricevuto: ${payload}`);
+
+        if (payload === 'PRENOTA') {
+          session.step = 'await_item';
+          await sendQuickReplies(senderId, "📦 Cosa dobbiamo trasportare?", [
+            { title: '🛋️ Mobili', payload: 'ITEM_Mobili' },
+            { title: '📺 Elettro', payload: 'ITEM_Elettro' },
+            { title: '📦 Altro', payload: 'ITEM_Altro' }
+          ]);
+        } 
+        else if (payload.startsWith('ITEM_')) {
+          session.data.item = payload.split('_')[1];
+          session.step = 'await_photo';
+          await sendText(senderId, `Hai scelto ${session.data.item}.\n\n📸 Per favore, invia una FOTO dell'oggetto.`);
+        } 
+        else if (payload === 'CONFIRM_PAY') {
+          await startStripePayment(senderId, session.data);
+          sessions[senderId] = { step: 'start', data: {} }; // Reset dopo invio link
+        }
       }
     }
     res.status(200).send('EVENT_RECEIVED');
   }
 });
 
-// --- LOGICA ALLEGATI (FOTO E GPS CORRETTA) ---
-async function handleAttachments(senderId, attachments) {
-  const session = getSession(senderId);
-  const att = attachments[0];
+// --- FUNZIONI DI INTERFACCIA ---
 
-  // Ricezione Foto
-  if (att.type === 'image' && session.step === 'await_photo') {
-    session.data.photoUrl = att.payload.url;
-    session.step = 'await_pickup';
-    await send(senderId, "📸 Foto ricevuta perfettamente!");
-    return send(senderId, "📍 Adesso inviaci la posizione GPS di RITIRO:");
-  }
-
-  // Ricezione GPS (Ritiro o Consegna)
-  if (att.type === 'location') {
-    const lat = att.payload.coordinates.lat;
-    const lon = att.payload.coordinates.long;
-
-    if (session.step === 'await_pickup') {
-      session.data.lat1 = lat;
-      session.data.lon1 = lon;
-      session.data.pickup = `https://www.google.com/maps?q=${lat},${lon}`;
-      session.step = 'await_drop';
-      return send(senderId, "✅ Ritiro impostato! Ora invia la posizione GPS di CONSEGNA:");
-    } 
-    
-    if (session.step === 'await_drop') {
-      session.data.lat2 = lat;
-      session.data.lon2 = lon;
-      session.data.drop = `https://www.google.com/maps?q=${lat},${lon}`;
-      
-      const km = calculateDistance(session.data.lat1, session.data.lon1, lat, lon);
-      session.data.km = km.toFixed(2);
-      
-      // Calcolo Prezzo: 10€ base + 1€/km (Minimo 15€)
-      let calcolo = 10 + (km * 1.0);
-      session.data.total = (calcolo < 15 ? 15 : calcolo).toFixed(2);
-      
-      session.step = 'await_email';
-      await send(senderId, `📏 Percorso calcolato: ${session.data.km} km.`);
-      return send(senderId, `💰 Prezzo Low-Cost: €${session.data.total}.\n\nScrivi la tua EMAIL per confermare:`);
-    }
-  }
-}
-
-async function handlePayload(senderId, payload) {
-  const session = getSession(senderId);
-  if (payload === 'PRENOTA') {
-    session.step = 'await_item';
-    return sendQuickReplies(senderId, "📦 Cosa dobbiamo trasportare?", [
-      { title: '🛋️ Mobili', payload: 'ITEM_Mobili' },
-      { title: '📺 Elettrodomestici', payload: 'ITEM_Elettrodomestici' },
-      { title: '📦 Altro', payload: 'ITEM_Altro' }
-    ]);
-  }
-  if (payload.startsWith('ITEM_')) {
-    session.data.item = payload.split('_')[1];
-    session.step = 'await_photo';
-    return send(senderId, `Hai scelto: ${session.data.item}.\n\n📸 Per favore, invia una FOTO dell'oggetto.`);
-  }
-  if (payload === 'CONFIRM_PAY') return createPaymentLink(senderId);
-  if (payload === 'RESET') { resetSession(senderId); return sendMenu(senderId); }
-}
-
-async function handleText(senderId, text) {
-  const session = getSession(senderId);
-  const msg = text.toLowerCase().trim();
-  if (['menu', 'reset', 'ciao'].includes(msg)) { resetSession(senderId); return sendMenu(senderId); }
-  if (session.step === 'await_email') {
-    if (!text.includes('@')) return send(senderId, "⚠️ Email errata. Riprova:");
-    session.data.email = text;
-    return confirmBooking(senderId);
-  }
-  return sendMenu(senderId);
-}
-
-async function sendMenu(senderId) {
-  return sendQuickReplies(senderId, "🚚 Benvenuto su Ri-Do 🟢\nTrasporti facili e veloci a Caserta.", [
-    { title: '📦 Prenota ora', payload: 'PRENOTA' }
-  ]);
-}
-
-async function confirmBooking(senderId) {
-  const d = getSession(senderId).data;
-  const summary = `📋 RIEPILOGO:\n📦 Oggetto: ${d.item}\n📏 Distanza: ${d.km} km\n💰 Totale: €${d.total}\n\nConfermi e procedi al pagamento?`;
-  return sendQuickReplies(senderId, summary, [
-    { title: '💳 Paga ora', payload: 'CONFIRM_PAY' },
-    { title: '❌ Annulla', payload: 'RESET' }
-  ]);
-}
-
-async function createPaymentLink(senderId) {
-  const d = getSession(senderId).data;
-  const totaleCent = Math.round(parseFloat(d.total) * 100);
-  try {
-    const sessionStripe = await stripe.checkout.sessions.create({
-      payment_method_types: ['card', 'paypal'],
-      line_items: [{
-        price_data: {
-          currency: 'eur',
-          product_data: { name: `Trasporto Ri-Do (${d.km} km)` },
-          unit_amount: totaleCent,
-        },
-        quantity: 1,
-      }],
-      mode: 'payment',
-      success_url: 'https://www.facebook.com/messages/t/61588660651078',
-      cancel_url: 'https://www.facebook.com/messages/t/61588660651078',
-    });
-    await send(senderId, `🔗 Clicca qui per pagare €${d.total}: ${sessionStripe.url}`);
-    await finalizeOrderAdmin(senderId); 
-  } catch (e) { await send(senderId, "⚠️ Errore pagamento. Riprova."); }
-}
-
-async function finalizeOrderAdmin(senderId) {
-  const d = getSession(senderId).data;
-  const spettanzaRider = (parseFloat(d.total) - 5.00).toFixed(2);
-  const mailOptions = {
-    from: `Ri-Do Bot 🟢 <${process.env.GMAIL_USER}>`,
-    to: process.env.GMAIL_USER,
-    subject: `🚚 ORDINE: €${d.total} (Tuo: €5.00)`,
-    html: `<h2>Nuovo Ordine Ri-Do</h2>
-           <p style="font-size:18px; color:green;"><b>Tua Commissione: €5.00</b></p>
-           <p style="font-size:16px; color:blue;">Da dare al Rider: €${spettanzaRider}</p>
-           <hr>
-           <p>📦 Oggetto: ${d.item}</p>
-           <p>🖼️ Foto: <a href="${d.photoUrl}">Vedi Foto</a></p>
-           <p>📍 Ritiro: <a href="${d.pickup}">Mappa Ritiro</a></p>
-           <p>🏠 Consegna: <a href="${d.drop}">Mappa Consegna</a></p>
-           <p>📧 Cliente: ${d.email}</p>`
-  };
-  try { await transporter.sendMail(mailOptions); } catch (e) { console.log("Mail Error"); }
-  resetSession(senderId);
-}
-
-async function send(id, text) {
+async function sendStartButton(id) {
   await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
-    recipient: { id }, message: { text }
-  }).catch(e => { console.log("FB Error"); });
+    recipient: { id },
+    message: { attachment: { type: "template", payload: { template_type: "button", text: "🚚 Benvenuto su Ri-Do!\nTrasporti facili a Caserta.", buttons: [{ type: "postback", title: "📦 Prenota ora", payload: "PRENOTA" }] } } }
+  });
 }
 
 async function sendQuickReplies(id, text, replies) {
   await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
     recipient: { id },
-    message: { text, quick_replies: replies.map(r => ({ content_type: 'text', title: r.title, payload: r.payload })) }
-  }).catch(e => { console.log("FB Error"); });
+    message: { text, quick_replies: replies.map(r => ({ content_type: "text", title: r.title, payload: r.payload })) }
+  });
 }
 
-app.listen(process.env.PORT || 10000);
+async function sendSummary(id, d) {
+  await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
+    recipient: { id },
+    message: { attachment: { type: "template", payload: { template_type: "button", text: `📋 RIEPILOGO:\n📦 Oggetto: ${d.item}\n📏 Distanza: ${d.km} km\n💰 Totale: €${d.total}\n\nConfermi e paghi?`, buttons: [{ type: "postback", title: "💳 Paga ora", payload: "CONFIRM_PAY" }] } } }
+  });
+}
+
+async function startStripePayment(id, d) {
+  try {
+    const stripeSess = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'paypal'],
+      line_items: [{ price_data: { currency: 'eur', product_data: { name: `Trasporto Ri-Do (${d.km} km)` }, unit_amount: Math.round(parseFloat(d.total) * 100) }, quantity: 1 }],
+      mode: 'payment',
+      success_url: 'https://www.facebook.com/messages/t/61588660651078',
+      cancel_url: 'https://www.facebook.com/messages/t/61588660651078',
+    });
+    
+    await sendText(id, `🔗 Clicca qui per pagare €${d.total} e confermare il rider: ${stripeSess.url}`);
+    
+    // Invia Email Admin
+    const spettanzaRider = (parseFloat(d.total) - 5.0).toFixed(2);
+    await transporter.sendMail({
+      from: process.env.GMAIL_USER, to: process.env.GMAIL_USER,
+      subject: `🚚 ORDINE: €${d.total} (Tuo: €5.00)`,
+      html: `<h3>Nuovo Ordine Ri-Do</h3><p><b>Guadagno per te: 5€</b></p><p>Da dare al rider: ${spettanzaRider}€</p><hr><p>Ritiro: ${d.pickup}</p><p>Consegna: ${d.drop}</p><p>Email: ${d.email}</p><p>Foto: <a href="${d.photoUrl}">Vedi Foto</a></p>`
+    });
+  } catch (e) { console.log("Stripe/Email Error:", e); }
+}
+
+async function sendText(id, text) {
+  await axios.post(`https://graph.facebook.com/v19.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: { text } });
+}
+
+app.listen(process.env.PORT || 10000, () => console.log("🚀 Server Ri-Do Online!"));
